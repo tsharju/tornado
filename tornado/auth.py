@@ -50,7 +50,6 @@ import binascii
 import cgi
 import hashlib
 import hmac
-import httpclient
 import escape
 import logging
 import time
@@ -64,6 +63,8 @@ class OpenIdMixin(object):
 
     See GoogleMixin below for example implementations.
     """
+    http = None
+
     def authenticate_redirect(self, callback_uri=None,
                               ax_attrs=["name","email","language","username"]):
         """Returns the authentication URL for this service.
@@ -91,7 +92,7 @@ class OpenIdMixin(object):
         args = dict((k, v[-1]) for k, v in self.request.arguments.iteritems())
         args["openid.mode"] = u"check_authentication"
         url = self._OPENID_ENDPOINT + "?" + urllib.urlencode(args)
-        http = httpclient.AsyncHTTPClient()
+        http = self.http()
         http.fetch(url, self.async_callback(
             self._on_authentication_verified, callback))
 
@@ -200,6 +201,8 @@ class OAuthMixin(object):
 
     See TwitterMixin and FriendFeedMixin below for example implementations.
     """
+    http = None
+
     def authorize_redirect(self, callback_uri=None):
         """Redirects the user to obtain OAuth authorization for this service.
 
@@ -215,7 +218,7 @@ class OAuthMixin(object):
         """
         if callback_uri and getattr(self, "_OAUTH_NO_CALLBACKS", False):
             raise Exception("This service does not support oauth_callback")
-        http = httpclient.AsyncHTTPClient()
+        http = self.http()
         http.fetch(self._oauth_request_token_url(), self.async_callback(
             self._on_request_token, self._OAUTH_AUTHORIZE_URL, callback_uri))
 
@@ -241,7 +244,7 @@ class OAuthMixin(object):
             callback(None)
             return
         token = dict(key=cookie_key, secret=cookie_secret)
-        http = httpclient.AsyncHTTPClient()
+        http = self.http()
         http.fetch(self._oauth_access_token_url(token), self.async_callback(
             self._on_access_token, callback))
 
@@ -377,7 +380,7 @@ class TwitterMixin(OAuthMixin):
         This is generally the right interface to use if you are using
         Twitter for single-sign on.
         """
-        http = httpclient.AsyncHTTPClient()
+        http = self.http()
         http.fetch(self._oauth_request_token_url(), self.async_callback(
             self._on_request_token, self._OAUTH_AUTHENTICATE_URL, None))
 
@@ -432,7 +435,7 @@ class TwitterMixin(OAuthMixin):
             args.update(oauth)
         if args: url += "?" + urllib.urlencode(args)
         callback = self.async_callback(self._on_twitter_request, callback)
-        http = httpclient.AsyncHTTPClient()
+        http = self.http()
         if post_args is not None:
             http.fetch(url, method="POST", body=urllib.urlencode(post_args),
                        callback=callback)
@@ -552,7 +555,7 @@ class FriendFeedMixin(OAuthMixin):
             args.update(oauth)
         if args: url += "?" + urllib.urlencode(args)
         callback = self.async_callback(self._on_friendfeed_request, callback)
-        http = httpclient.AsyncHTTPClient()
+        http = self.http()
         if post_args is not None:
             http.fetch(url, method="POST", body=urllib.urlencode(post_args),
                        callback=callback)
@@ -643,7 +646,7 @@ class GoogleMixin(OpenIdMixin, OAuthMixin):
                 break
         token = self.get_argument("openid." + oauth_ns + ".request_token", "")
         if token:
-            http = httpclient.AsyncHTTPClient()
+            http = self.http()
             token = dict(key=token, secret="")
             http.fetch(self._oauth_access_token_url(token),
                        self.async_callback(self._on_access_token, callback))
@@ -692,6 +695,8 @@ class FacebookMixin(object):
     required to make requests on behalf of the user later with
     facebook_request().
     """
+    http = None
+
     def authenticate_redirect(self, callback_uri=None, cancel_uri=None,
                               extended_permissions=None):
         """Authenticates/installs this app for the current user."""
@@ -749,12 +754,13 @@ class FacebookMixin(object):
             method="facebook.users.getInfo",
             callback=self.async_callback(
                 self._on_get_user_info, callback, session),
+            session_secret=session["secret"],
             session_key=session["session_key"],
             uids=session["uid"],
             fields="uid,first_name,last_name,name,locale,pic_square," \
                    "profile_url,username")
 
-    def facebook_request(self, method, callback, **args):
+    def facebook_request(self, method, callback, session_secret,  **args):
         """Makes a Facebook API REST request.
 
         We automatically include the Facebook API key and signature, but
@@ -793,10 +799,10 @@ class FacebookMixin(object):
         args["method"] = method
         args["call_id"] = str(long(time.time() * 1e6))
         args["format"] = "json"
-        args["sig"] = self._signature(args)
+        args["sig"] = self._signature(args, session_secret)
         url = "http://api.facebook.com/restserver.php?" + \
             urllib.urlencode(args)
-        http = httpclient.AsyncHTTPClient()
+        http = self.http()
         http.fetch(url, callback=self.async_callback(
             self._parse_response, callback))
 
@@ -835,9 +841,9 @@ class FacebookMixin(object):
             return
         callback(json)
 
-    def _signature(self, args):
+    def _signature(self, args, secret):
         parts = ["%s=%s" % (n, args[n]) for n in sorted(args.keys())]
-        body = "".join(parts) + self.settings["facebook_secret"]
+        body = "".join(parts) + secret
         if isinstance(body, unicode): body = body.encode("utf-8")
         return hashlib.md5(body).hexdigest()
 
